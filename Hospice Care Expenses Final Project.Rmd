@@ -1,0 +1,678 @@
+---
+title: "An Exploration of Hospice Care Expenses"
+author: "Zachary Dyne"
+date: "12/14/2019"
+output: html_document:
+    df_print: kable
+    fig_height: 5
+    fig_width: 8.5
+    highlight: kate
+    number_sections: yes
+    theme: yeti
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+    code_folding: "hide"
+  word_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction 
+
+## Project Overview: Medicare Hospice Care Expenditures
+
+This project explores the nature of Medicare hospice care  expenditures across the United States. I found these [datasets](https://www.kaggle.com/cms/medicare-hospice-use-spending-aggregate-reports) on Kaggle, uploaded by the Center for Medicare and Medicaid Research. 
+
+### What is Hospice Care? 
+- Hospice care, otherwise known as end-of-life care, is a type of care typically used by patients who feel their treatment of a terminal illness is not helping them improve. 
+- Using hospice is not a signal of "giving up". Hospice care focuses on quaility of life rather than directly treating the illness. 
+  - It focuses on "relief from pain, shortness of breath, and other symptoms so that you can focus on the people and things you care about the most" [(WebMD)](https://www.webmd.com/healthy-aging/hospice-care#1). 
+
+### Research Questions
+- What factors predict Medicare payments to providers by diagnosis, length of stay, site of service, hours per week, and number of beneficiaries? 
+- With three years of data, I aim to learn how these factors change overtime by themselves while also seeing whether their interactions do as well.
+- What is considered "typical" for payments to hospice care providers? What causes atypical payments to providers?
+
+## Data Preparation:
+
+```{r message=FALSE, warning=FALSE}
+#load required packages
+library(tidyverse)
+library(ggthemes)
+library(ggplot2); theme_set(theme_tufte())
+library(data.table)
+library(GGally)
+library(cowplot)
+library(mosaic)
+library(scales)
+library(broom)
+library(purrr)
+library(moderndive)
+
+#read datsets for each year, add a 'year' factor variable to each dataset, and bind together
+setwd("C:/Users/Lenovo/Desktop/AGSM/Fall2019/RCertificate/Medicare Data/")
+Provider2016 <- read_csv("medicare-hospice-use-and-spending-by-provider-aggregate-report-cy-2016.csv")
+Provider2016$Year <- as.factor(2016)
+
+Provider2015 <- read_csv("medicare-hospice-use-and-spending-by-provider-aggregate-report-cy-2015.csv")
+Provider2015$Year <- as.factor(2015)
+
+Provider2014 <- read_csv("medicare-hospice-use-and-spending-by-provider-aggregate-report-cy-2014.csv")
+Provider2014$Year <- as.factor(2014)
+
+D <- rbind(Provider2016, Provider2015)
+D <- rbind(D, setnames(Provider2014, names(D)))
+```
+
+## Merge with "Region and Division" dataset
+
+The original datasets do not include region, which may be a more useful metric than analyzing by state. I found this [dataset](https://www.kaggle.com/omer2040/usa-states-to-region) on Kaggle, and it includes state names, state codes, region, and division. Classifications are as determined by the [US Census Bureau](https://www2.census.gov/geo/pdfs/maps-data/maps/reference/us_regdiv.pdf). Let's merge it with the Medicare master dataset to be able to analyze payments by region. 
+```{r warning=F, message=F}
+states <- read_csv("Medicare Data/states.csv") %>%
+  rename("StateName" = "State", "State" = "State Code") %>% 
+  # rename to merge with master dataset
+  add_row("StateName" = "Puerto Rico", "State" = "PR", "Region" = "Caribbean ", "Division" = "Caribbean ") 
+  #Puerto Rico was not listed in the original Region dataset
+D <- D %>%
+  merge(states, by = "State", all.x = TRUE)
+```
+
+# Exploratory Data Analysis and Regression Modeling
+The objective of this exploratory data analysis is to understand the nature of our individual variables. I
+
+## Outcome Variable: Medicare Payments
+
+- Total amount that Medicare paid for hospice care: Hospice services do not have any cost-sharing requirements and the Medicare payment amount will equal the allowed amount.
+
+While this dataset provides a metric for total absolute payments, it also provides a standardized payment amont which adjust for geographic differences in payment rates. Here are overall summary statistics for Total Standardized Medicare Payment Amounts. 
+
+- Total Medicare Standard Payment Amount: Total amount that Medicare paid for hospice care adjusted for geographic differences in payment rates.
+
+```{r}
+favstats(D$`Total Medicare Standard Payment Amount`)
+```
+The meean Standard Payment Amount is `r mean(D$"Total Medicare Standard Payment Amount")`, which is notably higher than the median of `r median(D$"Total Medicare Standard Payment Amount")`. This fact, along with a large standard deviation of `r sd(D$"Total Medicare Standard Payment Amount")` points towards either a high skew or the presence of some extreme outliers. 
+
+Let's view Total Medicare Standardized Payment Amount
+```{r}
+plt1 <- D %>%
+    ggplot(aes(x = Year, y=`Total Medicare Standard Payment Amount`, fill = Year)) + 
+    geom_boxplot() + 
+    labs(title = "Total Medicare \nStandared Payment \nAmount", fill = "Year") + 
+    ylab(" ") +
+    theme(legend.position="none", axis.title = element_text()) + 
+    scale_y_continuous(label = dollar) + scale_fill_brewer()
+
+plt2 <- D %>%
+    mutate(rank = rank(desc(`Total Medicare Standard Payment Amount`))) %>%
+    arrange(rank) %>%
+    filter(rank > 3) %>%
+    ggplot(aes(x = Year, y=`Total Medicare Standard Payment Amount`, fill = Year)) + 
+    geom_boxplot() + 
+    labs(title = "Total Medicare \nStandared Payment Amount", 
+        subtitle = "Three highest values filtered out") + 
+    ylab(" ") +
+    theme(legend.position="none", axis.title = element_text()) +
+     scale_y_continuous(label = dollar) + scale_fill_brewer()
+#plot each boxplot series side-by-side using cowplot
+plot_grid(plt1, plt2, align = "h", rel_widths = c(1, 1.3), axis = "t")
+```
+
+If we remove all outliers, though, Total Medicare Standard Payment Amout mostly resembles a normal distriution. 
+```{r}
+plt3 <- D %>%
+    mutate(rank = rank(desc(`Total Medicare Standard Payment Amount`))) %>%
+    arrange(rank) %>%
+    filter(rank > 3) %>%
+    ggplot(aes(x = Year, y=`Total Medicare Standard Payment Amount`, fill = Year)) + 
+    geom_boxplot(outlier.shape = NA) +
+    labs(title = "Total Medicare \nStandared Payment Amount", 
+        subtitle = "Three highest values filtered out") + 
+    ylab(" ")  +
+    theme(legend.position="none", axis.title = element_text()) +
+    scale_y_continuous(label = dollar, limits = c(0, 7600000)) +
+    scale_fill_brewer()
+
+plt4 <- D %>%
+  mutate(logStandardPaymentAmount = log(`Total Medicare Standard Payment Amount`)) %>%
+  ggplot(aes(x = Year, y=logStandardPaymentAmount, fill = Year)) + 
+  geom_boxplot() + 
+  labs(title = "Total Medicare \nStandared Payment Amount", 
+       subtitle = "Values are log transformed") + ylab(" ") +
+  theme(legend.position="none", axis.title = element_text()) +
+  scale_fill_brewer()
+
+plot_grid(plt3, plt4, align = "h", rel_widths = c(1, 1.3), axis = "t")
+```
+
+After removing these extreme estreme outliers, Standard Medicare Payment Amount is still skewed.With a normal distribution, log transformed values may be a more useful predictor. It is It is worth noting that the distributions appear to remain farily consistant over the three years in our dataset.
+
+Let's see a correlation between our outcome variable and a variables that I would hypothesize would be positively correlated with Total Medicare Standard Payment. 
+```{r warning=F, message=F}
+D <- D %>%
+  mutate(logStandardPaymentAmount = log(`Total Medicare Standard Payment Amount`))
+CorVarLabs <- c("Standard Pmt", "Hospice beneficiaries", "Total Days", "Average Age", "# with Cancer")
+D %>%
+  select(`Total Medicare Standard Payment Amount`, 
+         `Hospice beneficiaries`, 
+         `Total Days`, 
+         `Average Age`,
+         `Hospice beneficiaries with a primary diagnosis of cancer`) %>% 
+  ggpairs(title = "Correlation Matrix with Standard Payment", 
+          columnLabels = CorVarLabs)
+```
+
+How do these correlations with the Standard Payment Amount compare with correlations with Logged Standard Payment Amount?
+```{r warning=F, message=F}
+D %>%
+  select(`logStandardPaymentAmount`, 
+         `Hospice beneficiaries`, 
+         `Total Days`, 
+         `Average Age`,
+         `Hospice beneficiaries with a primary diagnosis of cancer`) %>% 
+  ggpairs(title = "Correlation Matrix with Logged Standard Payment", 
+          columnLabels = CorVarLabs)
+```
+
+Logging Standard Payment Amount decreases the correlation these selected predictor variables. It still may be useful in regressoin analyses
+
+## Predictor Variables: Data Exploration and Liner Models by Variable Type
+
+Between the orignal datasets and merged ones, there are a variety of varialbes to anlayze. This section analyzes each variable of interest, grouped both by variable type (categorical and numeric) and by category (service hours, number of benificiaries by diagnosis, number of benificiaries by race, and number of benificiaries by gender). 
+
+I will analyze each variable individually and compare them to variables within their category using t-tests and/or linear regressions to test differenes within each category. 
+
+### Categorical Predictor Variables
+
+#### Data Exploration
+
+**Region**
+
+Summarize "Total Medicare Standard Payment Amount" and "Logged Total Medicare Standard Payment Amount" grouped by region and year
+```{r}
+D %>%
+  group_by(Region) %>%
+  summarise(Min = min(`Total Medicare Standard Payment Amount`),
+            Q1 = quantile(`Total Medicare Standard Payment Amount`, .25),
+            median = median(`Total Medicare Standard Payment Amount`), 
+            Q3 = quantile(`Total Medicare Standard Payment Amount`, .75),
+            max = max(`Total Medicare Standard Payment Amount`),
+            mean = mean(`Total Medicare Standard Payment Amount`),
+            sd = sd(`Total Medicare Standard Payment Amount`),
+            n = n(),
+            missing = count(is.na(`Total Medicare Standard Payment Amount`))) %>%
+  arrange(desc(mean))
+```
+The Northeast has the highest mean payment amounts and second highest median, behind the Caribbean. The South has the widest spread. This seems natural since it has the highest amount of providers as well. The West has the lowest amount mean. 
+
+##### Linear Model Exploring Payment by Region
+```{r}
+lm(`Total Medicare Standard Payment Amount` ~ Region, data = D) %>%
+  get_regression_table()
+```
+
+**Year**
+```{r}
+D %>%
+  group_by(Year) %>%
+  summarise(Min = min(`Total Medicare Standard Payment Amount`),
+            Q1 = quantile(`Total Medicare Standard Payment Amount`, .25),
+            median = median(`Total Medicare Standard Payment Amount`), 
+            Q3 = quantile(`Total Medicare Standard Payment Amount`, .75),
+            max = max(`Total Medicare Standard Payment Amount`),
+            mean = mean(`Total Medicare Standard Payment Amount`),
+            sd = sd(`Total Medicare Standard Payment Amount`),
+            n = n(),
+            missing = count(is.na(`Total Medicare Standard Payment Amount`))) %>%
+  arrange(desc(mean))
+```
+The mean and median payment accross the board has increased incrementally each year. 
+
+
+Is this difference significant in a linear model?
+```{r}
+lm(`Total Medicare Standard Payment Amount` ~ Year, data = D) %>%
+  get_regression_table()
+```
+With insignificant p-vlaues for each of the years, there is not a significant difference by year. 
+
+
+#### Let's break down Average Payment by Region and Year
+
+```{r}
+D %>%
+  group_by(Region, Year) %>%
+  summarise(Payment = mean(`Total Medicare Standard Payment Amount`)) %>%
+  ggplot(aes(x = as.numeric(as.character(Year)), y = Payment, color= Region)) +
+  geom_line(size = 0.9) + geom_point() + 
+  labs(title = "Mean Total Medicare Standard Payment Amount by Region") + 
+  xlab("Year") + ylab("Mean Payment") +
+  scale_x_continuous(labels = 
+      c("2014.0" = "2014", "2014.5" = " ", 
+        "2015.0" = "2015", "2015.5" = " ", "2016.0" = "2016")) +
+  scale_y_continuous(label = dollar) +
+  scale_color_brewer()
+```
+Payments are growing each year accross each region, except the West with a slight decline.
+
+
+##### Intertion Rregression with Year and Region
+
+Let's see if that gorwing progression holds up in an interaction linear model
+
+```{r}
+lm(`Total Medicare Standard Payment Amount` ~ Year*Region, data = D) %>%
+  get_regression_table()
+```
+
+Neither levels themselves nor their interactions have statistically significant p-values, so alone these are not great predictors. This is actually something of positive sign for the industry. It would be concerning if amount paid varied drastically by year or region given the nature of the service hospice centers provide, so these are slightly encouraging findings.
+
+## Numeric Predictors of Interest
+
+### Physician Services
+- Physician Services: "Total number of hospice care physician services provided"
+```{r}
+fav_stats(D$`Physician Services`)
+```
+
+
+There appears to be a very wide range with a large standard deviation. This variable is very skewed since both Q1 and the median are 0 hours, but the mean is about 307 hours. 
+
+
+```{r}
+D %>%
+  ggplot(aes(y=`Physician Services`)) + geom_boxplot() +
+  labs(title = "Physician Services",
+       subtitle = "Total number of hospice care physician services provided") +
+  ylab("Physician Service Hours")
+```
+Indeed, there are several outliers present.
+
+### Care Hours Spent
+- Home Health Visit Hours per Day
+```{r}
+fav_stats(D$`Home Health Visit Hours per Day`)
+```
+- Home Health Visit Hours per Day During Week Prior to Death
+```{r}
+fav_stats(D$`Home Health Visit Hours per Day During Week Prior to Death`)
+```
+
+It is known that overall visit hours and, thus payments, are higher in th last week of life. Is that supported in this data? 
+```{r}
+t.test(D$`Home Health Visit Hours per Day`, 
+       D$`Home Health Visit Hours per Day During Week Prior to Death`) %>% 
+  list() %>% map_df(.,tidy)
+```
+Yes, the expected amount of visit hours is significanlty higher in the last week prior to death than it is overal. There is an average increase in Home Health Visit Hours per day of 0.05 hours in the week prior to death. Given the circumstances, that is actually a bit less of an increase than I would have expected.
+Lets see if there is a greter increase in other types of care hours in the week prior to death. 
+
+```{r}
+D %>%
+  select(`Provider ID`,
+         `Home Health Visit Hours per Day`, 
+         `Home Health Visit Hours per Day During Week Prior to Death`) %>%
+  gather(key = "Type", value = "Values", 2:3) %>%
+  ggplot(aes(x=Values, fill = Type)) + 
+  geom_density() +
+  ggtitle("Home Health Visit Hours per Day") +
+  theme(legend.position="bottom")
+```
+The density plot of their logged values show that there is only a slight increase in hours per week in the week prior to death. This is likely due to a few outliers as well. 
+
+- Skilled Nursing Visit Hours per Day
+```{r}
+fav_stats(D$`Skilled Nursing Visit Hours per Day`)
+```
+
+- Skilled Nursing Visit Hours per Day During Week Prior to Death
+```{r}
+fav_stats(D$`Skilled Nursing Visit Hours per Day During Week Prior to Death`)
+```
+
+Does the hypothesized difference stand for Skilled Nursing Visits? 
+```{r}
+t.test(D$`Skilled Nursing Visit Hours per Day`, 
+       D$`Skilled Nursing Visit Hours per Day During Week Prior to Death`) %>% 
+  list() %>% map_df(.,tidy) 
+```
+Yes, there is a statistically significant increase in average hours per day by skilled nurses in the week prior to death than there are overall by 0.75 hours. This continues our expected trend of a slight increase in care hours in the week prior to death. 
+
+- Social Service Visit Hours per Day
+```{r}
+fav_stats(D$`Social Service Visit Hours per Day`)
+```
+
+- Social Service Visit Hours per Day During Week Prior to Death
+```{r}
+fav_stats(D$`Social Service Visit Hours per Day During Week Prior to Death`)
+```
+
+Does the difference hold for Social Service Hours per Day?
+```{r}
+t.test(D$`Social Service Visit Hours per Day`, 
+       D$`Social Service Visit Hours per Day During Week Prior to Death`) %>% 
+  list() %>% map_df(.,tidy)
+```
+Yes. Continuing this trend, there is an average incraese in hours visited by social service representatives in the week  prior to death. 
+
+#### Linear Regression by type of hours spent with patients
+```{r}
+mVisits <- lm(`Total Medicare Standard Payment Amount` ~ 
+   `Home Health Visit Hours per Day` +
+   `Home Health Visit Hours per Day During Week Prior to Death` +
+   `Skilled Nursing Visit Hours per Day` +
+   `Skilled Nursing Visit Hours per Day During Week Prior to Death` +
+   `Social Service Visit Hours per Day` +
+   `Social Service Visit Hours per Day During Week Prior to Death`, 
+   data = D)
+get_regression_table(mVisits)
+```
+
+This linear model is quite interesting and suprising to me. Each of the types of hours are statistically significant except Skilled Nursing Visit Hours per day, and Social Service Visit Hous per Day. Suprisingly, the amount of Home Health Visit Hours per Day and Social Service Visit Hours per Day had significant negaitve coefficients. For Home Health Visit Hours per Day, for each increase hour visited, we expect a *decrease* in standard payment amount by *2526305.4*. However, this linear model alone has a low explanatory capacity, explaining only `r percent(summary(mVisits)$r.squared)` of the overall variation in Total Medicare Standard Payment Amount. To assess if this is the result of very skewed data among all predictor and outcome variales, I will rerun the model using logged predictor and outcome values. 
+
+- **Regression with logged values**
+```{r}
+# create new dataframe for regression analysis of logged values
+DbyVistLog <- D %>%
+#### select only needed variables
+  select(`Provider ID`,
+        `Total Medicare Standard Payment Amount`,
+        `Home Health Visit Hours per Day`,
+        `Home Health Visit Hours per Day During Week Prior to Death`,
+        `Skilled Nursing Visit Hours per Day`, 
+        `Skilled Nursing Visit Hours per Day During Week Prior to Death`, 
+        `Social Service Visit Hours per Day`, 
+        `Social Service Visit Hours per Day During Week Prior to Death`) %>%
+### filter out NAs
+  filter(!is.na(`Total Medicare Standard Payment Amount`) & 
+         !is.na(`Home Health Visit Hours per Day`) & 
+         !is.na(`Home Health Visit Hours per Day During Week Prior to Death`) &
+         !is.na(`Skilled Nursing Visit Hours per Day`) &
+         !is.na(`Skilled Nursing Visit Hours per Day During Week Prior to Death`) & 
+         !is.na(`Social Service Visit Hours per Day`) &
+         !is.na(`Social Service Visit Hours per Day During Week Prior to Death`)) %>%
+### mutate with logging each value plus 1 (since min of multiple variables is 0)
+  mutate(lpmt = (log((`Total Medicare Standard Payment Amount`)+1)),
+         lHHVisitHRs = (log((`Home Health Visit Hours per Day`)+1)),
+         lHHVisitHRsD = (log((`Home Health Visit Hours per Day During Week Prior to Death`)+1)),
+         lSNV = (log((`Skilled Nursing Visit Hours per Day`)+1)),
+         lSNVD = (log((`Skilled Nursing Visit Hours per Day During Week Prior to Death`)+1)),
+         lSSVH = (log((`Social Service Visit Hours per Day`)+1)),
+         lSSVHD = (log((`Social Service Visit Hours per Day During Week Prior to Death`)+1)))
+# create and output model
+mVisitsL <- lm(lpmt ~ lHHVisitHRs + lHHVisitHRsD + lHHVisitHRsD + lSNV + lSNVD  + lSSVH + lSSVHD, data = DbyVistLog)
+get_regression_table(mVisitsL)
+```
+Even after logging the values, a Social Service Visit Hours per Day still displays negative correlation with Total Medicare Standard Payment Amount. Interpreting the logged regression, each percent increase in Social Service Visit hours predicts a 6.403% *decrease* in Total Medicare Standard Payment Amount. After logging variables, this model also shows a predicted slight percent *decrease* in Total Medicare Standard Payment Amount with each percent increase in Skilled Nursing Visit Hours.
+
+Model Diagnostics:
+```{r}
+get_regression_summaries(mVisitsL)
+get_regression_points(mVisitsL) %>%
+   ggplot(aes(x=residual)) + geom_density() +
+   ggtitle("Residuals from mVisits Regression Model") 
+```
+Even the logged model still has a low overall predicitve capacity with an R Squared of only `r percent(get_regression_summaries(mVisitsL)$r_squared)`. The model as a whole is statistically significant and the residuals do appear to be normal. 
+
+###  Diagnosis Types 
+```{r}
+# Create tidy dataframe with number of beneficiaries by type for easier analysis
+DbyDiagnosis <- D %>%
+  select(`Provider ID`,
+         `Hospice beneficiaries with a primary diagnosis of cancer`, 
+         `Hospice beneficiaries with a primary diagnosis of dementia`,
+         `Hospice beneficiaries with a primary diagnosis of stroke`,
+         `Hospice beneficiaries with a primary diagnosis of circulatory/heart disease`,
+         `Hospice beneficiaries with a primary diagnosis of respiratory disease`) %>%
+  gather(key = "Type", value = "Beneficiaries", 2:6)
+```
+
+Summary Statistics by Diagnosis Type
+```{r}
+DbyDiagnosis %>%  
+  group_by(Type) %>%
+  filter(!is.na(Beneficiaries)) %>%
+  summarise(Min = min(Beneficiaries),
+            Q1 = quantile(Beneficiaries, .25),
+            median = median(Beneficiaries), 
+            Q3 = quantile(Beneficiaries, .75),
+            max = max(Beneficiaries),
+            mean = mean(Beneficiaries),
+            sd = sd(Beneficiaries),
+            n = n()) %>%
+  arrange(desc(mean))
+```
+
+
+
+```{r warning=F}
+DbyDiagnosis %>%
+  ggplot(aes(x = Type, y = Beneficiaries, color = Type)) + 
+  geom_boxplot() + 
+  theme(legend.position="none") +
+  scale_x_discrete(labels = c("Cancer", "Dementia", "Stroke", "Circulatory/Heart", "Respiratory")) + 
+  labs(title = "Number of Benificiaries by Primary Diagnosis") +
+  ylab("Number of Distinct Beneficiaries") +
+  scale_color_brewer()
+```
+There are some extreme outliers, especially in Cancer, Dementia, and Respiratory 
+
+```{r warning = F}
+DbyDiagnosis %>%
+  ggplot(aes(x = Type, y = log(Beneficiaries), fill = Type)) + 
+  geom_boxplot(outlier.shape = NA) + 
+  scale_x_discrete(labels = c("Cancer", "Dementia", "Stroke", "Circulatory/Heart", "Respiratory")) + 
+  labs(title = "Number of Benificiaries by Primary Diagnosis",
+       subtitle = "Values are Logged") +
+  ylab("Number of Distinct Beneficiaries") + 
+  theme(legend.position = "none") +
+  scale_color_brewer()
+```
+After logging, the distribution acorss primary diagnosis type is both consistant and normal between diagnosies. 
+
+
+### Regression by Diagnosis
+```{r}
+DiagMod <- lm(log((`Total Medicare Standard Payment Amount`)+1) ~ 
+   log((`Hospice beneficiaries with a primary diagnosis of cancer`)+1) + 
+   log((`Hospice beneficiaries with a primary diagnosis of dementia`)+1) +
+   log((`Hospice beneficiaries with a primary diagnosis of stroke`)+1) +
+   log((`Hospice beneficiaries with a primary diagnosis of circulatory/heart disease`)+1) +
+   log((`Hospice beneficiaries with a primary diagnosis of respiratory disease`)+1), 
+   data = D)
+get_regression_table(DiagMod) 
+```
+This logged model shows several diagnosies with minimal predictive power. Each coefficient is statistically significant at a 0.01 alpha level. Beneficiaries with primary diagnoses of cancer or circulatory/heart had the highest impact on Total Medicare Standard Payment Amount; with each percent increase in the number of benificiaries with either cancer or circulatory/heart disease, we would expect a 0.362 percent increase in Total Medicare Standard Payment Amount. While this may seem small, this impact adds up over time!
+
+### Gender Distribution
+```{r}
+DbyGender <- D %>%
+  select(`Provider ID`, `Female hospice beneficiaries`, `Male hospice beneficiaries`) %>%
+  gather(key = "Gender", value = "Amount", 2:3) %>%
+  filter(!is.na(Amount)) 
+```
+
+````{r}
+DbyGender %>%  
+  group_by(Gender) %>%
+  summarise(Min = min(Amount),
+            Q1 = quantile(Amount, .25),
+            median = median(Amount), 
+            Q3 = quantile(Amount, .75),
+            max = max(Amount),
+            mean = mean(Amount),
+            sd = sd(Amount),
+            n = n(),
+            missing = count(is.na(Amount))) %>%
+  arrange(desc(mean))
+```
+
+```{r}
+DbyGender %>%
+  ggplot(aes(x=Gender, y = Amount, color = Gender)) +
+  geom_boxplot() + 
+  labs(title = "Number of Hospice Benificiaries by Gender") +
+  theme(legend.position="none") +
+  scale_color_brewer()
+```
+
+```{r}
+# count outliers by gender
+library(grDevices)
+F <- DbyGender %>% 
+  filter(Gender == "Female hospice beneficiaries")
+FL <- length(F$Amount[which(F$Amount %in% boxplot.stats(F$Amount)$out)])
+M <- DbyGender %>% 
+  filter(Gender == "Male hospice beneficiaries")
+ML <- length(M$Amount[which(M$Amount %in% boxplot.stats(M$Amount)$out)])
+```
+
+The distribution appears to be skewed, but we have `r FL` outliers for the amount of female benificiaries and `r ML` outliers for the amount of male benificiaries. 
+
+```{r warning = F}
+DbyGender %>%
+  ggplot(aes(x=Gender, y = Amount, fill = Gender)) +
+  geom_boxplot(outlier.shape = NA) + 
+  ylim(c(0,400)) +
+  labs(title = "Number of Hospice Benificiaries by Gender", 
+       subtitle = "Outliers Removed") +
+  theme(legend.position="none") +
+  scale_fill_brewer()
+```
+Distribution is still somewhat skewed, but resembles closer to a normal distribution. 
+
+#### Regression model by Gender
+Is there a difference in impact on Total Standard Payment by number of benificiaries by gender. 
+```{r}
+GMod <- lm(log(`Total Medicare Standard Payment Amount`) ~ 
+   log(`Female hospice beneficiaries`) +
+   log(`Male hospice beneficiaries`), 
+   data = D)
+get_regression_table(GMod) 
+```
+In using log values, we see a `r 0.922-0.042`% stronger impact of female beneficiaries on Total Medicare Standard Payment Amount than we do for male beneficiaries. Both factors are statistically significant, though. This model alone, though, has a very strong exlanatory capacity with an R squared at `r percent(summary(GMod)$r.squared)`. That is by far the strongest model within each category. 
+
+All told, this indicates that there are noteably more women than men in the US hospice system. 
+
+### Racial Distributions
+```{r}
+DbyRace <- D %>%
+  select(`Provider ID`, 
+         `White hospice beneficiaries`, 
+         `Black hospice beneficiaries`, 
+         `Asian hospice beneficiaries`, 
+         `Hispanic hospice beneficiaries`, 
+         `Other/unknown race hospice beneficiaries`) %>%
+  gather(key = "Race", value = "Amount", 2:6) %>%
+  filter(!is.na(Amount))
+```
+
+```{r}
+DbyRace %>%
+  group_by(Race) %>%
+  summarise(Min = min(Amount),
+            Q1 = quantile(Amount, .25),
+            median = median(Amount), 
+            Q3 = quantile(Amount, .75),
+            max = max(Amount),
+            mean = mean(Amount),
+            sd = sd(Amount),
+            n = n(),
+            missing = count(is.na(Amount))) %>%
+  arrange(desc(mean))
+```
+
+```{r}
+DbyRace$RaceLabel <- word(DbyRace$Race, 1) 
+#extract the first word in the varaible, caputring the only word needed for the boxplot label
+
+DbyRace %>%  
+  ggplot(aes(x=RaceLabel, y = Amount, color = Race)) +
+  geom_boxplot() + 
+  labs(title = "Number of Hospice Benificiaries by Race") +
+  theme(legend.position="none") + 
+  xlab("Race") + ylab("Amount of Beifiareis") +
+  scale_color_brewer()
+```
+
+```{r warning = F}
+DbyRace %>%  
+  ggplot(aes(x=RaceLabel, y = Amount, fill = Race)) +
+  geom_boxplot(outlier.shape = NA) + 
+  labs(title = "Number of Hospice Benificiaries by Race",
+       subtitle = "Outliers Removed") +
+  theme(legend.position="none") + 
+  ylim(c(0, 550)) +
+  xlab("Race") + ylab("Amount of Beifiareis") +
+  scale_fill_brewer()
+```
+
+It is difficult to see the distribution of amount of benificiaries by race, particularly considering the range for amount of White identifying benificiaries is so much higher than it is for the each of the other Race categories. 
+
+```{r}
+DbyRace %>%
+  group_by(Race) %>%  
+  summarise(total = sum(Amount)) %>%
+  mutate(percent = percent(total/sum(total)))
+```
+
+For a clearer visualization of this descrepency, let's see the difference just between White and White.
+
+```{r}
+DbyRace <- DbyRace %>%
+  mutate(White = RaceLabel == "White")
+DbyRace %>%
+  group_by(White) %>%  
+  summarise(total = sum(Amount)) %>%
+  mutate(percent = percent(total/sum(total)))
+```
+
+```{r}
+DbyRace %>%  
+  ggplot(aes(x=White, y = Amount, fill = White)) +
+  geom_boxplot(outlier.shape = NA) + 
+  labs(title = "Number of Hospice Benificiaries by Race",
+       subtitle = "Outliers Removed, Non-White and White") +
+  theme(legend.position="none") + 
+  ylim(c(0, 550)) +
+  xlab("White") + ylab("Amount of Beifiareis") +
+  scale_fill_brewer()
+```
+
+It is interesting to note that 84.7% of the beneficiaries in the dataset are identified as white. This could be an anomolie or the result of several intersecting socioeconoimc and historical factors pertaining to access to healh care, especially end-of-life care. This is consistant [Cohen's 2008 systematic review](https://www.ncbi.nlm.nih.gov/pubmed/18588409) of racial disparities in hospice care system.
+
+Let's see how this logic holds up in a regression model on Total Medicare Standard Payment Amount. 
+```{r}
+RMod <- lm(`Total Medicare Standard Payment Amount` ~ 
+   `White hospice beneficiaries` +
+   `Black hospice beneficiaries` + 
+   `Asian hospice beneficiaries` +
+   `Hispanic hospice beneficiaries` + 
+   `Other/unknown race hospice beneficiaries`, data = D)
+get_regression_table(RMod)
+```
+```{r}
+summary(RMod)$r.squared
+```
+
+This model has a vey high predictive power with an R squared of `r percent(summary(RMod)$r.squared)` with each coefficient being statistically significant. According to this model, each added white beneficiary contributes an expected \$10677.08 in standard medicare payments with a relatively low standard error of \$202.11. Each added added Black beneficiary contributes an expected \$11347.95 in standard medicare payments, but with a relatively high standard error of \$1113.10. This variation is again likely due to the notably more white beneficiares in the dataset. 
+
+## Final Conclusions and Takeaways
+- Diagnosis Type, Gender, and Race all proved to be strong predictors of standard medicare payments
+- Year and Region did not prove to be strong predictors. 
+- There are noteably more women then men recieving treatment in the hospice system.
+- Hospice payments are tend to be skewed with a small group of highlgy differentiated outliers. If one is interested in detecting fraud, identifying unique characteristics of those outliers is a useful starting point. 
+
+### Next steps for further exploration
+There is so much more to explore about the hospice system using this data set as a startin point. Some initial ideas to include: 
+
+- Analyze average age as a variable
+- Create regression analyses of within each variable grouping to find the stongest predictors.  
